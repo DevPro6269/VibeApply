@@ -148,6 +148,100 @@ Resume text:
 ${resumeText}
 ---`;
 
+// Generic Gemini JSON call — used by both resume parsing and field mapping.
+async function geminiJsonCall({ apiKey, systemInstruction, userPrompt }) {
+  const response = await fetch(GEMINI_ENDPOINT(GEMINI_MODEL, apiKey), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      systemInstruction: { parts: [{ text: systemInstruction }] },
+      contents: [{ role: "user", parts: [{ text: userPrompt }] }],
+      generationConfig: {
+        temperature: 0,
+        responseMimeType: "application/json",
+      },
+    }),
+  });
+
+  if (!response.ok) {
+    const body = await response.text();
+    if (response.status === 400) throw new Error("Invalid request or API key (400)");
+    if (response.status === 403) throw new Error("API key forbidden — check it's enabled (403)");
+    if (response.status === 429) throw new Error("Rate limit exceeded — wait a minute (429)");
+    throw new Error(`Gemini error ${response.status}: ${body.slice(0, 200)}`);
+  }
+
+  const json = await response.json();
+  const content = json.candidates?.[0]?.content?.parts?.[0]?.text;
+  if (!content) throw new Error("Gemini returned no content");
+
+  try {
+    return JSON.parse(content);
+  } catch (e) {
+    throw new Error("Gemini returned invalid JSON: " + content.slice(0, 200));
+  }
+}
+
+// ---------- Gemini: form fields + resume → { fieldId: value } ----------
+const MAPPER_SYSTEM_INSTRUCTION = `You are a form-filling assistant for job applications. Given (1) a list of form fields detected on a job application page and (2) the candidate's structured resume, you must produce a JSON mapping of field IDs to the best value from the resume.
+
+Rules:
+- Return JSON only. No prose, no markdown.
+- The output shape is exactly: { "<fieldId>": <value>, ... } — one entry per input field.
+- For text/textarea fields: return a plain string suitable for that input. Use the resume value verbatim when possible.
+- For dropdown fields: if "options" are provided, you MUST pick one of those exact option strings. Otherwise return the best match as a string.
+- For date fields: return "YYYY-MM-DD". If only month is known, use day "01".
+- For checkbox/radio fields: return either an exact option string from the field's options, or a boolean.
+- For file fields: return null (we'll handle file upload separately).
+- If no good match exists in the resume, return null for that field. NEVER invent data.
+- Required fields ("required": true) deserve extra effort — still return null if no data exists, but make sure obvious matches are made.
+- For open-ended questions (e.g. "Why are you a fit?", "Tell us about yourself"), generate a concise 2-3 sentence answer using the resume's summary/skills/experience. Be professional, no clichés.
+- Skip fields whose label suggests they're for the next step / pagination (e.g. "Search", "Continue", "Next") — return null.
+
+Field label normalization:
+- "Given Name" / "Legal First Name" / "First Name" → resume.name (first token)
+- "Family Name" / "Surname" / "Legal Last Name" / "Last Name" → resume.name (last token)
+- "Preferred Name" → resume.name (first token, unless otherwise indicated)
+- "Email" / "Email Address" → resume.email
+- "Phone" / "Mobile" / "Phone Number" → resume.phone
+- "Country" / "Country/Region" → infer from resume.location
+- "City" / "State" / "Zip" → parse from resume.location
+- "LinkedIn" / "LinkedIn URL" → resume.links.linkedin
+- "GitHub" / "Personal Website" / "Portfolio" → resume.links.github / portfolio`;
+
+function buildMapperPrompt(fields, resume) {
+  const fieldDescriptors = fields.map((f) => ({
+    id: f.id,
+    label: f.label,
+    type: f.type,
+    required: f.required || false,
+    ...(f.options?.length ? { options: f.options } : {}),
+    ...(f.currentValue ? { currentValue: f.currentValue } : {}),
+  }));
+
+  return `Resume (structured JSON):
+${JSON.stringify(resume, null, 2)}
+
+Form fields on the current page (${fields.length} total):
+${JSON.stringify(fieldDescriptors, null, 2)}
+
+Return a JSON object mapping each field id to its best value. Example shape:
+{
+  "f0": "Pallavi",
+  "f1": "Patel",
+  "f2": "pallavipatel8080@gmail.com",
+  "f3": null
+}`;
+}
+
+async function mapFieldsWithAI(fields, resume, apiKey) {
+  return await geminiJsonCall({
+    apiKey,
+    systemInstruction: MAPPER_SYSTEM_INSTRUCTION,
+    userPrompt: buildMapperPrompt(fields, resume),
+  });
+}
+
 async function parseResumeWithAI(resumeText, apiKey) {
   const response = await fetch(GEMINI_ENDPOINT(GEMINI_MODEL, apiKey), {
     method: "POST",
@@ -330,9 +424,106 @@ saveResumeBtn.addEventListener("click", async () => {
   updateAutofillEnabled(true, true);
 });
 
-// ---------- autofill button (wired in a later step) ----------
-autofillBtn.addEventListener("click", () => {
-  console.log("[VibeApply] autofill clicked — not wired yet");
+// Send a message; if the content script isn't loaded yet, inject it and retry.
+async function sendToContentScript(tabId, message) {
+  try {
+    return await chrome.tabs.sendMessage(tabId, message);
+  } catch (err) {
+    const msg = String(err?.message || err);
+    const looksMissing =
+      msg.includes("Could not establish connection") ||
+      msg.includes("Receiving end does not exist");
+
+    if (!looksMissing) throw err;
+
+    console.log("[VibeApply] content script not present, injecting…");
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      files: ["src/content/workday-filler.js"],
+    });
+
+    // brief pause to let listeners attach
+    await new Promise((r) => setTimeout(r, 100));
+
+    return await chrome.tabs.sendMessage(tabId, message);
+  }
+}
+
+// ---------- autofill: detect → map → (next step) fill ----------
+autofillBtn.addEventListener("click", async () => {
+  const originalText = autofillBtn.textContent;
+  autofillBtn.disabled = true;
+
+  try {
+    // 1. Tab check
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tab?.url || !/myworkdayjobs\.com/.test(tab.url)) {
+      alert("Open a Workday job application page first (a *.myworkdayjobs.com URL).");
+      return;
+    }
+
+    // 2. Load saved resume + key
+    const stored = await chrome.storage.local.get([STORAGE_KEY_API, STORAGE_KEY_RESUME]);
+    const apiKey = stored[STORAGE_KEY_API];
+    const resume = stored[STORAGE_KEY_RESUME]?.data;
+    if (!apiKey) { alert("Save your Gemini API key first."); return; }
+    if (!resume) { alert("Save your resume first."); return; }
+
+    // 3. Detect fields
+    autofillBtn.textContent = "Detecting fields…";
+    const detectResponse = await sendToContentScript(tab.id, { type: "DETECT_FIELDS" });
+    if (!detectResponse?.ok) {
+      alert(`Field detection failed: ${detectResponse?.error || "no response"}`);
+      return;
+    }
+    const fields = detectResponse.fields;
+    console.log(`[VibeApply] detected ${fields.length} fields:`, fields);
+
+    if (fields.length === 0) {
+      alert("No fillable fields detected on this page. Are you on a sign-in/honeypot screen?");
+      return;
+    }
+
+    // 4. AI map: fields + resume → { fieldId: value }
+    autofillBtn.textContent = "Asking AI to map fields…";
+    const mapping = await mapFieldsWithAI(fields, resume, apiKey);
+    console.log("[VibeApply] AI mapping:", mapping);
+
+    // 5. Fill: tell content script to apply the mapping to the page
+    autofillBtn.textContent = "Filling fields…";
+    const fillResponse = await sendToContentScript(tab.id, {
+      type: "FILL_FIELDS",
+      mapping,
+    });
+
+    if (!fillResponse?.ok) {
+      alert(`Fill failed: ${fillResponse?.error || "no response"}`);
+      return;
+    }
+
+    const results = fillResponse.results;
+    const filled = results.filter((r) => r.status === "filled").length;
+    const skippedNoValue = results.filter((r) => r.status === "skipped_no_value").length;
+    const skippedPrefilled = results.filter((r) => r.status === "skipped_prefilled").length;
+    const errors = results.filter((r) => r.status === "error");
+
+    console.log("[VibeApply] fill summary:", { filled, skippedNoValue, skippedPrefilled, errors });
+
+    let summary = `Filled ${filled} / ${results.length} fields.`;
+    if (skippedPrefilled) summary += `\nSkipped (already filled): ${skippedPrefilled}`;
+    if (skippedNoValue) summary += `\nSkipped (no resume data): ${skippedNoValue}`;
+    if (errors.length) {
+      summary += `\nErrors: ${errors.length} — see console`;
+      console.warn("[VibeApply] errored fields:", errors);
+    }
+    alert(summary);
+  } catch (err) {
+    console.error("[VibeApply] autofill error", err);
+    alert(`Error: ${err.message}`);
+  } finally {
+    autofillBtn.disabled = false;
+    autofillBtn.textContent = originalText;
+  }
 });
 
 // init
