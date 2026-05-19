@@ -3,7 +3,7 @@
 }
 
 body {
-  width: 340px;
+  width: 360px;
   margin: 0;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
   color: #1f2328;
@@ -11,7 +11,7 @@ body {
 }
 
 .container {
-  padding: 20px;
+  padding: 18px;
 }
 
 header {
@@ -30,22 +30,104 @@ h1 {
   color: #656d76;
 }
 
-.status-box {
+.card {
   padding: 12px;
+  margin-bottom: 12px;
   background: #f6f8fa;
   border: 1px solid #d0d7de;
-  border-radius: 6px;
+  border-radius: 8px;
 }
 
-.status {
-  margin: 0 0 4px 0;
+.card label {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #1f2328;
+}
+
+.row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+input[type="password"],
+input[type="text"] {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 8px;
   font-size: 13px;
+  border: 1px solid #d0d7de;
+  border-radius: 6px;
+  font-family: inherit;
+}
+
+input[type="file"] {
+  flex: 1;
+  font-size: 12px;
+}
+
+input:focus {
+  outline: none;
+  border-color: #0969da;
+  box-shadow: 0 0 0 2px rgba(9, 105, 218, 0.2);
+}
+
+.btn-secondary {
+  padding: 6px 12px;
+  font-size: 12px;
   font-weight: 500;
+  background: #fff;
+  border: 1px solid #d0d7de;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.btn-secondary:hover {
+  background: #f3f4f6;
+}
+
+.btn-primary {
+  width: 100%;
+  padding: 10px;
+  margin-top: 4px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #fff;
+  background: #1f883d;
+  border: 1px solid rgba(31, 35, 40, 0.15);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.btn-primary:hover:not(:disabled) {
+  background: #1a7f37;
+}
+
+.btn-primary:disabled {
+  background: #94d3a2;
+  cursor: not-allowed;
+}
+
+.status-line {
+  margin: 8px 0 0 0;
+  font-size: 12px;
+  color: #656d76;
+}
+
+.status-line.ok {
   color: #1a7f37;
+  font-weight: 500;
+}
+
+.status-line.err {
+  color: #cf222e;
 }
 
 .hint {
-  margin: 0;
-  font-size: 12px;
+  margin: 12px 0 0 0;
+  font-size: 11px;
   color: #656d76;
+  text-align: center;
 }

@@ -9,13 +9,40 @@
   <div class="container">
     <header>
       <h1>VibeApply</h1>
-      <p class="tagline">Workday Autofill</p>
+      <p class="tagline">AI-powered Workday autofill</p>
     </header>
 
-    <section class="status-box">
-      <p class="status">Extension loaded ✓</p>
-      <p class="hint">Open a Workday job page to begin.</p>
+    <section class="card">
+      <label for="apiKey">OpenAI API Key</label>
+      <div class="row">
+        <input
+          id="apiKey"
+          type="password"
+          placeholder="sk-..."
+          autocomplete="off"
+          spellcheck="false"
+        >
+        <button id="saveKeyBtn" class="btn-secondary">Save</button>
+      </div>
+      <p id="keyStatus" class="status-line">Not set</p>
     </section>
+
+    <section class="card">
+      <label for="resumeFile">Resume (PDF)</label>
+      <div class="row">
+        <input id="resumeFile" type="file" accept=".pdf">
+        <button id="saveResumeBtn" class="btn-secondary">Save</button>
+      </div>
+      <p id="resumeStatus" class="status-line">Not uploaded</p>
+    </section>
+
+    <button id="autofillBtn" class="btn-primary" disabled>
+      Autofill current page
+    </button>
+
+    <p id="hint" class="hint">
+      Save your API key and resume, then open a Workday job page.
+    </p>
   </div>
 
   <script src="popup.js"></script>
