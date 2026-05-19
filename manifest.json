@@ -1,0 +1,35 @@
+{
+  "manifest_version": 3,
+  "name": "VibeApply — Workday Autofill",
+  "version": "0.1.0",
+  "description": "AI-powered Chrome extension that autofills Workday job applications using your resume.",
+
+  "permissions": [
+    "storage",
+    "activeTab",
+    "scripting"
+  ],
+
+  "host_permissions": [
+    "*://*.myworkdayjobs.com/*",
+    "https://api.openai.com/*"
+  ],
+
+  "action": {
+    "default_popup": "src/popup/popup.html",
+    "default_title": "VibeApply"
+  },
+
+  "background": {
+    "service_worker": "src/background/service-worker.js",
+    "type": "module"
+  },
+
+  "content_scripts": [
+    {
+      "matches": ["*://*.myworkdayjobs.com/*"],
+      "js": ["src/content/workday-filler.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
