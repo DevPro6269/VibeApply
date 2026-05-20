@@ -607,7 +607,7 @@ function detectFields() {
 
     // Question context — Workday often uses generic "Please Select One" labels,
     // with the real question in a nearby heading. Find it.
-    const context = findFieldContext(el, label);
+    const context = findFieldContext(el);
 
     const field = {
       id: `f${counter++}`,
@@ -804,40 +804,37 @@ function humanizeId(id) {
 }
 
 // Workday often uses generic labels like "Please Select One" with the real
-// question in a heading or question element above. Walk up the DOM to find it.
-function findFieldContext(el, label) {
-  const labelLower = (label || "").toLowerCase().trim();
-  const isGeneric =
-    !labelLower ||
-    labelLower === "please select one" ||
-    labelLower === "select one" ||
-    /^choose/.test(labelLower) ||
-    labelLower === "select" ||
-    labelLower === "answer";
-
-  // Walk up looking for preceding headings or question-like text
+// question in a heading above the field — sometimes deeply nested.
+// Walk up ancestors and at each level find the closest heading (in document
+// order) that appears BEFORE our field.
+function findFieldContext(el) {
   let node = el;
-  for (let depth = 0; depth < 8 && node && node !== document.body; depth++) {
-    let sibling = node.previousElementSibling;
-    while (sibling) {
-      // Direct heading sibling?
-      if (/^H[1-6]$/.test(sibling.tagName)) {
-        const t = (sibling.textContent || "").replace(/\s+/g, " ").trim();
-        if (t && t.length < 240) return t;
-      }
-      // Question-like element inside the sibling?
-      const heading = sibling.querySelector?.("h1, h2, h3, h4, h5, h6, legend, [role='heading']");
-      if (heading?.textContent) {
-        const t = heading.textContent.replace(/\s+/g, " ").trim();
-        if (t && t.length < 240) return t;
-      }
-      sibling = sibling.previousElementSibling;
-    }
-    node = node.parentElement;
-  }
+  for (let depth = 0; depth < 10 && node && node !== document.body; depth++) {
+    const parent = node.parentElement;
+    if (!parent) break;
 
-  // Only useful when the label is generic — otherwise the label tells us enough
-  return isGeneric ? null : null;
+    const headings = Array.from(
+      parent.querySelectorAll(
+        "h1, h2, h3, h4, h5, h6, legend, [role='heading']",
+      ),
+    );
+    // Keep only headings that come BEFORE el in document order
+    const before = headings.filter(
+      (h) =>
+        h !== el && !(el.compareDocumentPosition(h) & Node.DOCUMENT_POSITION_FOLLOWING),
+    );
+
+    // Pick the CLOSEST one — the last one before our element
+    const closest = before[before.length - 1];
+
+    if (closest) {
+      const t = (closest.textContent || "").replace(/\s+/g, " ").trim();
+      if (t && t.length < 240) return t;
+    }
+
+    node = parent;
+  }
+  return null;
 }
 
 // File inputs are usually invisible, with a styled <button> or <label> nearby
