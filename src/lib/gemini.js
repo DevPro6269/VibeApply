@@ -137,7 +137,7 @@ Rules:
 - For date fields: return "YYYY-MM-DD". If only month is known, use day "01".
 - For checkbox/radio fields: return either an exact option string from the field's options, or a boolean.
 - For file fields: if the label clearly refers to a resume/CV upload (labels like "Resume", "CV", "Curriculum Vitae", "Upload Resume", "Upload CV"), return the exact string "resume". For cover letters, transcripts, portfolios, or any other document type, return null.
-- If no good match exists in resume OR profile, return null. NEVER invent factual data like addresses, dates of birth, or identity numbers.
+- If no good match exists in resume OR profile, return null. NEVER invent factual data: addresses, dates of birth, identity numbers, OR work experience dates. If resume.work_experience[N].start_date is missing/null, the corresponding "From" field must be null — do not guess.
 - For open-ended questions (e.g. "Why are you a fit?", "Tell us about yourself", "Why do you want to work here?"), generate a concise 2-3 sentence answer grounded in the resume's summary, skills, and recent experience. Be professional, no clichés, no hallucinated company details.
 - Skip fields whose label suggests pagination (e.g. "Search", "Continue", "Next") — return null.
 - For sensitive demographic questions (race, gender, ethnicity, veteran status, disability status) — return null. Let the user answer manually.
@@ -176,6 +176,14 @@ Repeatable sections (multiple experiences, educations, projects):
   - "Project Name" / "Project Description" with occurrenceIndex N → resume.projects[N]
 - If the resume has fewer items than the form expects (e.g. form has 3 experience blocks but resume only has 2), return null for all fields in the missing block.
 
+Multi-value inputs (Skills, Tags, Languages):
+- For fields whose label is "Skills", "Type to Add Skills", "Languages", "Tags", or similar multi-value inputs, return a JSON ARRAY of strings (not a single string).
+- Each array item will be typed into the search box. If a checkbox dropdown appears, the matching option will be clicked. If it's a chip input, Enter will be pressed.
+- Pull values from resume.skills (already an array). Cap at ~10 most role-relevant skills if there are more.
+- Use COMMONLY-INDEXED skill names that public taxonomies recognize: prefer "JavaScript" over "JS / ES6+", "Node.js" over "NodeJS", "PostgreSQL" over "Postgres", "Amazon Web Services" or "AWS" over "AWS (EC2)", "Docker" over "Docker containerization". Strip parenthetical detail.
+- Skip composite phrases like "Schema Design" or "Middleware Design" — these rarely match Workday's catalog. Prefer concrete tool/language names.
+- Example: { "f4": ["JavaScript", "Node.js", "Express.js", "MongoDB", "PostgreSQL", "Docker", "AWS", "Git", "REST API"] }
+
 URL field handling:
 - For fields with "URL", "Link", "Website", "LinkedIn", "GitHub", "Portfolio" in the label, the value MUST be a full URL starting with "https://".
 - If the resume's links value isn't a valid URL (e.g., it's just "LinkedIn" or "GitHub" — a label not a URL) return null. Do NOT type a label into a URL field.
@@ -186,10 +194,30 @@ URL field handling:
 Date format handling:
 - Each date field may include a "placeholder" hint (e.g. "MM/YYYY", "MM/DD/YYYY", "Month Year"). MATCH THAT FORMAT EXACTLY.
 - "From" / "To" date fields in work experience usually want "MM/YYYY" (month + year only).
+- Education "From" / "To (Actual or Expected)" fields are often YEAR ONLY (4-digit year, e.g. "2023"). If the placeholder is "YYYY" or the label says "Year", return only the year.
 - Specific start/end dates may want "MM/DD/YYYY".
 - If no placeholder is provided, use "YYYY-MM-DD" (our filler will reformat for HTML5 date inputs).
-- For current/ongoing jobs: if resume.end_date is "present" and the field is text, return "Present" or "MM/YYYY" of today if a date is required.
-- NEVER leave required date fields as null when the resume has the data — convert format if needed.`;
+- For current/ongoing jobs: if resume.end_date is "present" and the field is text, return "Present".
+- NEVER leave required date fields as null when the resume has the data — convert format if needed.
+
+ABSOLUTE RULES for work-experience date fields (From / To / Start Date / End Date):
+- The ONLY valid source for these is resume.work_experience[occurrenceIndex].start_date and .end_date for that exact occurrenceIndex.
+- If start_date is null, missing, "", or unparseable in the resume → return null for the "From" field. Period.
+- If end_date is null/missing → return null for the "To" field. Period.
+- If "From" is null, the corresponding "To" must also be null.
+- A "To" value MUST be chronologically >= the "From" value. If they would conflict, return null for both.
+- NEVER use placeholder dates, today's date, defaults, or guesses. NEVER extrapolate from job description text.
+- It is FAR better to leave 10 date fields null than to invent one wrong date.
+- If there is NO resume.work_experience[N] entry for a given occurrenceIndex, all fields for that block must be null.
+
+CRITICAL: present / ongoing jobs:
+- If resume.work_experience[N].end_date is "present", "Present", "current", "now", "ongoing", or similar → the "To" field MUST get the string "Present" (capitalized). Do NOT convert it to a date. Do NOT use another job's start_date.
+- If the form has a checkbox like "I currently work here" or "Currently working" for that occurrenceIndex AND end_date is "present", return true for that checkbox AND return null (or "Present") for the "To" date field.
+
+CRITICAL: occurrenceIndex mapping:
+- occurrenceIndex N refers to resume.work_experience[N] EXACTLY. Index 0 = first job in resume (usually most recent). Index 1 = second job. Etc.
+- Never swap dates between jobs. Never use job 0's start with job 1's end.
+- "From" + "To" + "Company" + "Title" with the same occurrenceIndex N all describe the SAME job — resume.work_experience[N].`;
 
   function buildMapperPrompt(fields, resume, profile) {
     const descriptors = fields.map((f) => ({
@@ -229,10 +257,47 @@ Return a JSON object mapping each field id to its best value. Example shape:
     });
   }
 
+  // Per-field fallback: given a value and a list of dropdown option texts,
+  // ask Gemini to pick the best matching option. Used when local matching
+  // (exact / contains / abbreviation) fails.
+  async function pickOptionWithAI(value, options, context, apiKey) {
+    if (!options || options.length === 0) return null;
+
+    const systemInstruction = `You map a candidate's value to the best option in a dropdown. Return JSON only.
+
+Rules:
+- Output shape: { "choice": <exact option string from the provided list> | null }
+- The "choice" MUST be one of the option strings VERBATIM (same casing, same wording, same punctuation).
+- If no option is a reasonable semantic match, return { "choice": null }. Never invent.
+- Examples of good matching:
+  - value "Bachelor of Technology" with options ["BTECH","MCA","MBA"] → choice "BTECH"
+  - value "United States" with options ["US","UK","Canada"] → choice "US"
+  - value "JavaScript / Node.js" with options ["JavaScript","Python","Go"] → choice "JavaScript"
+  - value "Need sponsorship" with options ["Yes","No","Maybe"] → choice "Yes"`;
+
+    const userPrompt = `Field context: ${context || "dropdown"}
+
+Value the candidate gave: "${value}"
+
+Available options:
+${options.map((o) => `- "${o}"`).join("\n")}
+
+Pick the best matching option. Return JSON: { "choice": "..." } or { "choice": null }.`;
+
+    try {
+      const result = await geminiJsonCall({ apiKey, systemInstruction, userPrompt });
+      return result?.choice || null;
+    } catch (err) {
+      console.warn("[VibeApply] pickOptionWithAI failed:", err);
+      return null;
+    }
+  }
+
   return {
     MODEL,
     geminiJsonCall,
     parseResumeWithAI,
     mapFieldsWithAI,
+    pickOptionWithAI,
   };
 })();
