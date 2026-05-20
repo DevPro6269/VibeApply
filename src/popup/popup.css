@@ -131,3 +131,78 @@ input:focus {
   color: #656d76;
   text-align: center;
 }
+
+/* Profile section (collapsible) */
+.card-summary {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  list-style: none;
+  user-select: none;
+}
+
+.card-summary::-webkit-details-marker {
+  display: none;
+}
+
+.card-summary::before {
+  content: "▸";
+  display: inline-block;
+  margin-right: 6px;
+  transition: transform 0.15s;
+  color: #656d76;
+}
+
+details[open] .card-summary::before {
+  transform: rotate(90deg);
+}
+
+.card-summary > span:first-child {
+  flex: 1;
+}
+
+.card-summary .status-line {
+  margin: 0;
+  font-weight: 500;
+}
+
+.profile-fields {
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.field-group label {
+  display: block;
+  margin-bottom: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #1f2328;
+}
+
+.field-group input,
+.field-group select {
+  width: 100%;
+  padding: 6px 8px;
+  font-size: 12px;
+  border: 1px solid #d0d7de;
+  border-radius: 6px;
+  font-family: inherit;
+  background: #fff;
+}
+
+.field-group input:focus,
+.field-group select:focus {
+  outline: none;
+  border-color: #0969da;
+  box-shadow: 0 0 0 2px rgba(9, 105, 218, 0.2);
+}
+
+.profile-save {
+  width: 100%;
+  margin-top: 4px;
+}

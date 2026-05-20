@@ -36,6 +36,68 @@
       <p id="resumeStatus" class="status-line">Not uploaded</p>
     </section>
 
+    <section class="card">
+      <details>
+        <summary class="card-summary">
+          <span>Additional Info</span>
+          <span id="profileStatus" class="status-line">0 / 7 filled</span>
+        </summary>
+        <div class="profile-fields">
+          <div class="field-group">
+            <label for="workAuthorization">Work Authorization</label>
+            <select id="workAuthorization">
+              <option value="">— Not specified —</option>
+              <option>Authorized to work without sponsorship</option>
+              <option>Will require sponsorship now or in the future</option>
+              <option>Citizen / Permanent resident</option>
+              <option>Not authorized</option>
+            </select>
+          </div>
+
+          <div class="field-group">
+            <label for="sponsorshipNeeded">Visa Sponsorship Needed</label>
+            <select id="sponsorshipNeeded">
+              <option value="">— Not specified —</option>
+              <option>Yes</option>
+              <option>No</option>
+            </select>
+          </div>
+
+          <div class="field-group">
+            <label for="noticePeriod">Notice Period</label>
+            <input id="noticePeriod" type="text" placeholder="e.g. 30 days, Immediate">
+          </div>
+
+          <div class="field-group">
+            <label for="expectedSalary">Expected Salary</label>
+            <input id="expectedSalary" type="text" placeholder="e.g. $120,000 or Negotiable">
+          </div>
+
+          <div class="field-group">
+            <label for="startDate">Available Start Date</label>
+            <input id="startDate" type="text" placeholder="e.g. 2026-06-01 or Immediate">
+          </div>
+
+          <div class="field-group">
+            <label for="howDidYouHear">How Did You Hear About Us</label>
+            <input id="howDidYouHear" type="text" placeholder="e.g. LinkedIn, Referral">
+          </div>
+
+          <div class="field-group">
+            <label for="willingToRelocate">Willing to Relocate</label>
+            <select id="willingToRelocate">
+              <option value="">— Not specified —</option>
+              <option>Yes</option>
+              <option>No</option>
+              <option>Negotiable</option>
+            </select>
+          </div>
+
+          <button id="saveProfileBtn" class="btn-secondary profile-save">Save profile</button>
+        </div>
+      </details>
+    </section>
+
     <button id="autofillBtn" class="btn-primary" disabled>
       Autofill current page
     </button>
@@ -46,6 +108,7 @@
   </div>
 
   <script src="../../vendor/pdfjs/pdf.min.js"></script>
+  <script src="../lib/gemini.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>

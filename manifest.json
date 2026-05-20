@@ -28,7 +28,10 @@
   "content_scripts": [
     {
       "matches": ["*://*.myworkdayjobs.com/*"],
-      "js": ["src/content/workday-filler.js"],
+      "js": [
+        "src/lib/gemini.js",
+        "src/content/workday-filler.js"
+      ],
       "run_at": "document_idle"
     }
   ]
