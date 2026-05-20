@@ -11,6 +11,9 @@ const PROFILE_FIELDS = [
   "startDate",
   "howDidYouHear",
   "willingToRelocate",
+  "gender",
+  "veteranStatus",
+  "disabilityStatus",
 ];
 
 // pdf.js: tell it where the worker lives (relative to popup.html)

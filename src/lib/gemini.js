@@ -132,6 +132,7 @@ ${resumeText}
 Rules:
 - Return JSON only. No prose, no markdown.
 - Output shape: { "<fieldId>": <value>, ... } — one entry per input field.
+- When a field has a "context" property, that's the question/heading near the field. Use it together with the label to figure out what the field is for. For example: label="Please Select One", context="What is your gender?" → use profile.gender.
 - For text/textarea fields: return a plain string suitable for that input. Use the resume/profile value verbatim when possible.
 - For dropdown fields: if "options" are provided, you MUST pick one of those exact option strings. Otherwise return the best match as a string.
 - For date fields: return "YYYY-MM-DD". If only month is known, use day "01".
@@ -140,7 +141,11 @@ Rules:
 - If no good match exists in resume OR profile, return null. NEVER invent factual data: addresses, dates of birth, identity numbers, OR work experience dates. If resume.work_experience[N].start_date is missing/null, the corresponding "From" field must be null — do not guess.
 - For open-ended questions (e.g. "Why are you a fit?", "Tell us about yourself", "Why do you want to work here?"), generate a concise 2-3 sentence answer grounded in the resume's summary, skills, and recent experience. Be professional, no clichés, no hallucinated company details.
 - Skip fields whose label suggests pagination (e.g. "Search", "Continue", "Next") — return null.
-- For sensitive demographic questions (race, gender, ethnicity, veteran status, disability status) — return null. Let the user answer manually.
+- For sensitive demographic questions (gender, race, ethnicity, veteran status, disability status):
+  - If the profile has the relevant value (profile.gender / profile.veteranStatus / profile.disabilityStatus), use it. Match it semantically to one of the dropdown options.
+  - If profile does NOT have the value, pick the privacy-respecting option from the dropdown ("Decline to state", "Decline to answer", "Prefer not to answer", "I don't wish to answer", etc.).
+  - For race/ethnicity specifically — without profile data, pick "Decline to state" / "I don't wish to answer".
+  - NEVER invent demographic facts (don't guess race, sexual orientation, etc.).
 
 Resume field mapping:
 - "Given Name" / "Legal First Name" / "First Name" → resume.name (first token)
@@ -161,6 +166,10 @@ Profile field mapping (use these when the resume doesn't have the data):
 - "Available start date" / "When can you start" / "Earliest start date" → profile.startDate
 - "How did you hear about us" / "How did you find this opportunity" / "Source" → profile.howDidYouHear
 - "Willing to relocate" / "Open to relocation" → profile.willingToRelocate
+- "Gender" / "What is your gender" / "Sex" → profile.gender (match to dropdown option)
+- "Veteran" / "Protected veteran status" → profile.veteranStatus
+- "Disability" / "Self-identify a disability" → profile.disabilityStatus
+- "Race" / "Ethnicity" / "Hispanic or Latino" → no profile field — pick "Decline to state" option if available, else null
 
 Profile-to-options mapping (when a dropdown's options are specific Workday wording):
 - If profile.workAuthorization is "Authorized to work without sponsorship" and options include something like "Yes, I am authorized to work in this country without sponsorship" — pick that one.
@@ -225,6 +234,7 @@ CRITICAL: occurrenceIndex mapping:
       label: f.label,
       type: f.type,
       required: f.required || false,
+      ...(f.context ? { context: f.context } : {}),
       ...(f.occurrenceIndex > 0 ? { occurrenceIndex: f.occurrenceIndex } : {}),
       ...(f.placeholder ? { placeholder: f.placeholder } : {}),
       ...(f.options?.length ? { options: f.options } : {}),

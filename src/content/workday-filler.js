@@ -1,5 +1,8 @@
 console.log("[VibeApply] content script injected on", window.location.href);
 
+// Install submit-interceptor immediately so we catch the user's Submit click
+installSubmitInterceptor();
+
 // Module-level cache of last detected fields, indexed by id.
 // Keeps element refs (which can't cross the message boundary).
 let lastDetected = new Map(); // fieldId -> { meta, element }
@@ -13,6 +16,10 @@ const autopilot = {
   debounceTimer: null,
   cycleInFlight: false,
 };
+
+// Session history — every field we filled across all cycles (for review modal)
+const sessionHistory = []; // [{ label, value, step, timestamp }]
+let currentStep = 1;
 
 // ===========================================================================
 // Message listener — entry point for popup → content script communication
@@ -106,6 +113,19 @@ async function runAutofillCycle() {
     const errors = results.filter((r) => r.status === "error").length;
 
     showToast(`VibeApply: filled ${filled} / ${results.length} fields ✓`, "success");
+
+    // Append this step's filled fields to session history (for review modal)
+    for (const r of results) {
+      if (r.status === "filled") {
+        sessionHistory.push({
+          label: r.label,
+          value: r.value,
+          step: currentStep,
+          timestamp: Date.now(),
+        });
+      }
+    }
+    currentStep++;
 
     // Cooldown — prevents our own fill events from triggering a "new step" detection
     autopilot.cooldownUntil = Date.now() + 2500;
@@ -224,6 +244,266 @@ function computeSignature(fields) {
 }
 
 // ===========================================================================
+// Submit interceptor + review modal — required by the assignment
+// ===========================================================================
+
+// Time-window bypass: once the user approves submission in our modal, the next
+// submit-like click within this window is allowed through. Survives React
+// re-rendering the button (which would reset a per-element dataset flag).
+let submitBypassUntil = 0;
+
+function installSubmitInterceptor() {
+  document.addEventListener(
+    "click",
+    (e) => {
+      // CRITICAL: ignore clicks inside our own review modal — its "Submit
+      // application" button text matches the interceptor and would infinite-loop.
+      if (e.target.closest("#vibeapply-review-overlay")) return;
+
+      const btn = e.target.closest("button, [role='button']");
+      if (!btn) return;
+      if (!looksLikeSubmitButton(btn)) return;
+
+      // User-approved submit — let it through
+      if (Date.now() < submitBypassUntil) {
+        submitBypassUntil = 0;
+        console.log("[VibeApply] approved submit, letting through:", btn);
+        return;
+      }
+
+      console.log("[VibeApply] intercepted submit:", {
+        text: btn.textContent?.trim(),
+        automationId: btn.getAttribute("data-automation-id"),
+        ariaLabel: btn.getAttribute("aria-label"),
+      });
+
+      e.preventDefault();
+      e.stopPropagation();
+      e.stopImmediatePropagation();
+
+      showReviewModal(btn);
+    },
+    true, // capture phase — runs BEFORE any other handler
+  );
+  console.log("[VibeApply] submit interceptor installed");
+}
+
+function looksLikeSubmitButton(btn) {
+  // Never intercept disabled buttons (auth/create-account flows often disable
+  // the primary CTA until the form is valid)
+  if (btn.disabled) return false;
+  if (btn.getAttribute("aria-disabled") === "true") return false;
+
+  const text = (btn.textContent || "").trim().toLowerCase();
+  const aria = (btn.getAttribute("aria-label") || "").toLowerCase();
+  const auto = (btn.getAttribute("data-automation-id") || "").toLowerCase();
+
+  // Hard disqualifiers — never intercept these
+  if (/\b(next|continue|save|previous|back|cancel|delete|search|edit)\b/.test(text)) return false;
+  if (/\b(create account|register|sign up|sign in|log in|forgot|reset)\b/.test(text)) return false;
+  if (/(login|signin|signup|register|createaccount|forgotpassword|search)/i.test(auto)) return false;
+
+  // Positive matches — needs to explicitly mention submitting an APPLICATION
+  if (
+    text === "submit" ||
+    text === "submit application" ||
+    text === "submit my application" ||
+    text === "review and submit"
+  ) {
+    return true;
+  }
+  if (/\bsubmit\b/.test(text) && /\bapplication\b/.test(text)) return true;
+  if (auto.includes("submitapplication") || auto === "submit") return true;
+  if (aria === "submit" || aria.includes("submit application")) return true;
+
+  return false;
+}
+
+// Re-query for the current Submit Application button on the page. Used by the
+// modal's confirmation to handle React replacing the original element.
+function findSubmitButtonNow() {
+  const buttons = Array.from(document.querySelectorAll("button, [role='button']"));
+  return buttons.find((b) => looksLikeSubmitButton(b)) || null;
+}
+
+function showReviewModal(submitButton) {
+  // Tear down any prior modal
+  document.getElementById("vibeapply-review-overlay")?.remove();
+
+  const overlay = document.createElement("div");
+  overlay.id = "vibeapply-review-overlay";
+  overlay.style.cssText = `
+    position: fixed;
+    inset: 0;
+    background: rgba(15, 23, 42, 0.55);
+    z-index: 2147483647;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  `;
+
+  const modal = document.createElement("div");
+  modal.style.cssText = `
+    background: white;
+    border-radius: 12px;
+    width: 90%;
+    max-width: 640px;
+    max-height: 80vh;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    box-shadow: 0 24px 60px rgba(0,0,0,0.4);
+  `;
+
+  // Header
+  const header = document.createElement("div");
+  header.style.cssText = `padding: 20px 24px; border-bottom: 1px solid #e5e7eb;`;
+  header.innerHTML = `
+    <div style="display: flex; align-items: center; justify-content: space-between;">
+      <h2 style="margin: 0; font-size: 18px; font-weight: 700; color: #111827;">Review your application</h2>
+      <span style="font-size: 11px; padding: 4px 8px; background: #ecfdf5; color: #047857; border-radius: 999px; font-weight: 600;">VibeApply</span>
+    </div>
+    <p style="margin: 6px 0 0 0; font-size: 13px; color: #6b7280;">
+      ${sessionHistory.length} fields were autofilled. Verify them below — Workday usually doesn't allow edits after submission.
+    </p>
+  `;
+
+  // Body
+  const body = document.createElement("div");
+  body.style.cssText = `padding: 12px 24px; overflow-y: auto; flex: 1;`;
+
+  if (sessionHistory.length === 0) {
+    body.innerHTML = `<p style="color:#6b7280;font-size:14px;text-align:center;padding:32px 0;">No autofill activity in this session. You're submitting your own manual entries.</p>`;
+  } else {
+    // Group by step
+    const stepsMap = new Map();
+    for (const item of sessionHistory) {
+      if (!stepsMap.has(item.step)) stepsMap.set(item.step, []);
+      stepsMap.get(item.step).push(item);
+    }
+
+    for (const [step, items] of stepsMap) {
+      const stepHeading = document.createElement("div");
+      stepHeading.textContent = `Step ${step}`;
+      stepHeading.style.cssText = `
+        font-size: 11px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: #6b7280;
+        margin: 12px 0 6px;
+      `;
+      body.appendChild(stepHeading);
+
+      const table = document.createElement("div");
+      table.style.cssText = `display: flex; flex-direction: column; gap: 4px;`;
+
+      for (const item of items) {
+        const row = document.createElement("div");
+        row.style.cssText = `
+          display: flex;
+          padding: 8px 10px;
+          border-radius: 6px;
+          background: #f9fafb;
+          gap: 12px;
+        `;
+        const labelEl = document.createElement("div");
+        labelEl.style.cssText = `font-size: 12px; color: #6b7280; flex: 0 0 180px; word-break: break-word;`;
+        labelEl.textContent = item.label;
+
+        const valueEl = document.createElement("div");
+        valueEl.style.cssText = `font-size: 13px; color: #111827; flex: 1; word-break: break-word; line-height: 1.4;`;
+        valueEl.textContent = String(item.value).slice(0, 250);
+
+        row.appendChild(labelEl);
+        row.appendChild(valueEl);
+        table.appendChild(row);
+      }
+      body.appendChild(table);
+    }
+  }
+
+  // Footer
+  const footer = document.createElement("div");
+  footer.style.cssText = `
+    padding: 16px 24px;
+    border-top: 1px solid #e5e7eb;
+    display: flex;
+    gap: 8px;
+    justify-content: flex-end;
+    background: #f9fafb;
+  `;
+
+  const cancelBtn = document.createElement("button");
+  cancelBtn.textContent = "Cancel — let me edit";
+  cancelBtn.style.cssText = `
+    padding: 8px 16px;
+    border: 1px solid #d1d5db;
+    background: white;
+    color: #111827;
+    border-radius: 6px;
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+  `;
+  cancelBtn.onclick = () => overlay.remove();
+
+  const submitBtn = document.createElement("button");
+  submitBtn.textContent = "Submit application";
+  submitBtn.style.cssText = `
+    padding: 8px 18px;
+    border: 1px solid #1f883d;
+    background: #1f883d;
+    color: white;
+    border-radius: 6px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+  `;
+  submitBtn.onclick = () => {
+    overlay.remove();
+    console.log("[VibeApply] user approved submit");
+
+    // Open a 5-second window during which any submit-like click is allowed through.
+    // This survives React re-rendering the button (per-element flag would be lost).
+    submitBypassUntil = Date.now() + 5000;
+
+    // Re-find the button in case React replaced the DOM node we captured earlier.
+    const liveBtn = findSubmitButtonNow() || submitButton;
+
+    try {
+      liveBtn.focus();
+      liveBtn.click();
+    } catch (err) {
+      console.warn("[VibeApply] submitButton.click() threw:", err);
+    }
+
+    // Also dispatch a full MouseEvent chain in case React only listens to those.
+    for (const type of ["mousedown", "mouseup", "click"]) {
+      liveBtn.dispatchEvent(
+        new MouseEvent(type, {
+          bubbles: true,
+          cancelable: true,
+          view: window,
+          button: 0,
+        }),
+      );
+    }
+    console.log("[VibeApply] submit click dispatched on:", liveBtn);
+  };
+
+  footer.appendChild(cancelBtn);
+  footer.appendChild(submitBtn);
+
+  modal.appendChild(header);
+  modal.appendChild(body);
+  modal.appendChild(footer);
+  overlay.appendChild(modal);
+  document.body.appendChild(overlay);
+}
+
+// ===========================================================================
 // On-page toast notifications
 // ===========================================================================
 
@@ -325,6 +605,10 @@ function detectFields() {
       el.getAttribute("aria-placeholder") ||
       null;
 
+    // Question context — Workday often uses generic "Please Select One" labels,
+    // with the real question in a nearby heading. Find it.
+    const context = findFieldContext(el, label);
+
     const field = {
       id: `f${counter++}`,
       label,
@@ -337,6 +621,7 @@ function detectFields() {
       currentValue: getCurrentValue(el),
       required: isRequired(el),
       ...(placeholder ? { placeholder } : {}),
+      ...(context ? { context } : {}),
     };
 
     // For dropdowns/radios, capture the options
@@ -516,6 +801,43 @@ function humanizeId(id) {
     .replace(/([a-z])([A-Z])/g, "$1 $2")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+// Workday often uses generic labels like "Please Select One" with the real
+// question in a heading or question element above. Walk up the DOM to find it.
+function findFieldContext(el, label) {
+  const labelLower = (label || "").toLowerCase().trim();
+  const isGeneric =
+    !labelLower ||
+    labelLower === "please select one" ||
+    labelLower === "select one" ||
+    /^choose/.test(labelLower) ||
+    labelLower === "select" ||
+    labelLower === "answer";
+
+  // Walk up looking for preceding headings or question-like text
+  let node = el;
+  for (let depth = 0; depth < 8 && node && node !== document.body; depth++) {
+    let sibling = node.previousElementSibling;
+    while (sibling) {
+      // Direct heading sibling?
+      if (/^H[1-6]$/.test(sibling.tagName)) {
+        const t = (sibling.textContent || "").replace(/\s+/g, " ").trim();
+        if (t && t.length < 240) return t;
+      }
+      // Question-like element inside the sibling?
+      const heading = sibling.querySelector?.("h1, h2, h3, h4, h5, h6, legend, [role='heading']");
+      if (heading?.textContent) {
+        const t = heading.textContent.replace(/\s+/g, " ").trim();
+        if (t && t.length < 240) return t;
+      }
+      sibling = sibling.previousElementSibling;
+    }
+    node = node.parentElement;
+  }
+
+  // Only useful when the label is generic — otherwise the label tells us enough
+  return isGeneric ? null : null;
 }
 
 // File inputs are usually invisible, with a styled <button> or <label> nearby
@@ -715,8 +1037,11 @@ async function fillFields(mapping, resume) {
 async function fillOne(el, meta, value) {
   // Defensive: if the field looks like a URL field, refuse to type a non-URL value.
   // Prevents Workday from rejecting our autofill with "Invalid LinkedIn URL" etc.
-  if (looksLikeUrlField(meta) && !looksLikeUrl(value)) {
-    throw new Error(`refused to type non-URL value into URL field: "${value}"`);
+  if (looksLikeUrlField(meta)) {
+    if (!looksLikeUrl(value)) {
+      throw new Error(`refused to type non-URL value into URL field: "${value}"`);
+    }
+    value = normalizeUrlForWorkday(String(value), meta.label);
   }
 
   // Defensive: refuse implausibly old/future dates (likely AI hallucination).
@@ -794,6 +1119,25 @@ function looksLikeUrl(value) {
   if (v.length < 5) return false;
   // accept full URLs OR bare domains containing a dot
   return /^https?:\/\//i.test(v) || /^[\w-]+(\.[\w-]+)+(\/.*)?$/.test(v);
+}
+
+// Workday is strict about URL formatting. Fix common issues before typing.
+function normalizeUrlForWorkday(value, label) {
+  let v = value.trim();
+
+  // Add https:// if missing
+  if (!/^https?:\/\//i.test(v)) {
+    v = `https://${v}`;
+  }
+
+  // LinkedIn: Workday's regex usually requires "www." subdomain
+  if (/linkedin\.com/i.test(v)) {
+    v = v.replace(/^(https?:\/\/)(linkedin\.com)/i, "$1www.$2");
+  }
+
+  // Trim trailing slash and whitespace for cleanliness
+  v = v.replace(/\/+$/, "").trim();
+  return v;
 }
 
 // Detects whether a chip/tag field already has selections nearby.
